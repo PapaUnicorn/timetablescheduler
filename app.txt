@@ -1,0 +1,435 @@
+import streamlit as st
+import pandas as pd
+import datetime
+import random
+
+# ==========================================
+# 0. CONFIGURATION & INITIALIZATION
+# ==========================================
+st.set_page_config(page_title="Edunexus Timetable", layout="wide")
+st.title("📚 Edunexus Timetable Generator")
+st.markdown("### Anti-Conflict School Scheduling System")
+
+# Initialize Session State (The Database)
+if 'data_teachers' not in st.session_state:
+    st.session_state['data_teachers'] = pd.DataFrame(columns=['Teacher Name', 'Gender', 'Initials'])
+
+if 'data_classes' not in st.session_state:
+    st.session_state['data_classes'] = []
+
+if 'data_subjects' not in st.session_state:
+    st.session_state['data_subjects'] = pd.DataFrame(columns=[
+        'Type', 'Class', 'Subject', 'Subject Code', 
+        'Teacher Name', 'Teacher Initials', 'Periods/Week'
+    ])
+
+if 'time_structure' not in st.session_state:
+    st.session_state['time_structure'] = pd.DataFrame()
+
+# Helper Function: Smart Initials Generator
+def generate_initials_custom(full_name):
+    if not full_name: return ""
+    parts = full_name.strip().split()
+    if not parts: return ""
+    
+    # Logic 1: Multi-word (First of 1st + Last of 1st + First of Last)
+    if len(parts) > 1:
+        first_name = parts[0]
+        last_name = parts[-1]
+        return (first_name[0] + first_name[-1] + last_name[0]).upper()
+    
+    # Logic 2: Single-word (First + Last Two)
+    else:
+        name = parts[0]
+        if len(name) >= 3:
+            return (name[0] + name[-2] + name[-1]).upper()
+        else:
+            return name.upper()
+
+# ==========================================
+# SIDEBAR NAVIGATION
+# ==========================================
+menu = st.sidebar.selectbox("Navigation Menu", [
+    "1. Teachers Database", 
+    "2. Class Settings", 
+    "3. Time Settings", 
+    "4. Subjects & Curriculum", 
+    "5. Dashboard & Analytics",
+    "6. Generate Timetable"
+])
+
+# ==========================================
+# 1. TEACHERS DATABASE
+# ==========================================
+if menu == "1. Teachers Database":
+    st.header("👨‍🏫 Teachers Database")
+    st.info("Initials are auto-generated based on specific logic.")
+    
+    with st.form("form_guru"):
+        col1, col2 = st.columns(2)
+        name = col1.text_input("Full Name (e.g. Putri Ayu Dharmawan)")
+        gender = col2.selectbox("Gender", ["Male", "Female"])
+        
+        submit_teacher = st.form_submit_button("Save Teacher")
+        
+        if submit_teacher and name:
+            auto_initials = generate_initials_custom(name)
+            
+            # Check duplicate
+            if name in st.session_state['data_teachers']['Teacher Name'].values:
+                st.error(f"Teacher '{name}' already exists!")
+            else:
+                new_data = pd.DataFrame([{
+                    'Teacher Name': name, 
+                    'Gender': gender, 
+                    'Initials': auto_initials
+                }])
+                st.session_state['data_teachers'] = pd.concat(
+                    [st.session_state['data_teachers'], new_data], ignore_index=True
+                )
+                st.success(f"Added: {name} | Code: {auto_initials}")
+
+    st.subheader("Registered Teachers")
+    st.dataframe(st.session_state['data_teachers'], use_container_width=True)
+
+# ==========================================
+# 2. CLASS SETTINGS
+# ==========================================
+elif menu == "2. Class Settings":
+    st.header("🏫 Class & Grade Settings")
+    
+    col1, col2 = st.columns(2)
+    levels = col1.multiselect("Select Grade Levels", ["7", "8", "9", "10", "11", "12"])
+    parallels = col2.text_input("Enter Parallel Codes (comma separated)", value="A, B, C")
+    
+    if st.button("Generate Classes"):
+        if not levels:
+            st.error("Please select at least one grade level.")
+        else:
+            list_parallels = [p.strip() for p in parallels.split(',')]
+            generated_classes = []
+            for t in levels:
+                for p in list_parallels:
+                    generated_classes.append(f"{t}{p}")
+            
+            st.session_state['data_classes'] = sorted(generated_classes)
+            st.success(f"Successfully created {len(generated_classes)} classes!")
+
+    st.subheader("Active Classes")
+    if st.session_state['data_classes']:
+        st.write(", ".join(st.session_state['data_classes']))
+    else:
+        st.warning("No classes set yet.")
+
+# ==========================================
+# 3. TIME SETTINGS
+# ==========================================
+elif menu == "3. Time Settings":
+    st.header("⏰ Time Slots & Bell Schedule")
+    
+    with st.expander("Basic Configuration", expanded=True):
+        col1, col2 = st.columns(2)
+        start_time = col1.time_input("School Start Time", value=datetime.time(7, 0))
+        duration_per_period = col2.number_input("Duration per Period (Minutes)", min_value=15, max_value=60, value=40)
+        total_periods = col1.number_input("Total Periods per Day", min_value=1, max_value=15, value=8)
+    
+    st.subheader("☕ Break Time Settings")
+    
+    break_positions = st.multiselect(
+        "Break Time occurs AFTER period...", 
+        options=list(range(1, total_periods)),
+        help="Example: Select '4' if the break is after the 4th period."
+    )
+    
+    break_duration = st.number_input("Break Duration (Minutes)", min_value=5, max_value=60, value=20)
+    
+    if st.button("Generate Time Structure"):
+        schedule_list = []
+        current_dt = datetime.datetime.combine(datetime.date.today(), start_time)
+        
+        for i in range(1, total_periods + 1):
+            # 1. Period Start & End
+            period_start = current_dt
+            period_end = period_start + datetime.timedelta(minutes=duration_per_period)
+            
+            schedule_list.append({
+                'Period': str(i),
+                'Type': 'Class',
+                'Start Time': period_start.strftime("%H:%M"),
+                'End Time': period_end.strftime("%H:%M"),
+                'Duration': f"{duration_per_period} Mins"
+            })
+            
+            current_dt = period_end
+            
+            # 2. Insert Break if applicable
+            if i in break_positions:
+                break_start = current_dt
+                break_end = break_start + datetime.timedelta(minutes=break_duration)
+                
+                schedule_list.append({
+                    'Period': 'BREAK',
+                    'Type': 'BREAK',
+                    'Start Time': break_start.strftime("%H:%M"),
+                    'End Time': break_end.strftime("%H:%M"),
+                    'Duration': f"{break_duration} Mins"
+                })
+                
+                current_dt = break_end
+        
+        st.session_state['time_structure'] = pd.DataFrame(schedule_list)
+        st.success("Time structure generated successfully!")
+
+    if not st.session_state['time_structure'].empty:
+        st.write("---")
+        st.subheader("Preview: Daily Bell Schedule")
+        st.table(st.session_state['time_structure'])
+
+# ==========================================
+# 4. SUBJECTS & CURRICULUM
+# ==========================================
+elif menu == "4. Subjects & Curriculum":
+    st.header("📖 Curriculum & Activities Input")
+
+    if st.session_state['data_teachers'].empty or not st.session_state['data_classes']:
+        st.warning("⚠️ Please fill in 'Teachers Database' and 'Class Settings' first.")
+    else:
+        tab1, tab2 = st.tabs(["Academic Subjects", "Non-Academic (Events)"])
+        
+        # --- TAB 1: ACADEMIC ---
+        with tab1:
+            st.info("Use this for regular subjects assigned to a teacher.")
+            with st.form("form_academic"):
+                c1, c2 = st.columns(2)
+                selected_class = c1.selectbox("Select Class", st.session_state['data_classes'], key="cls_acd")
+                subject_name = c2.text_input("Subject Name (e.g., Mathematics)", value="")
+                subject_code = c1.text_input("Subject Code (Max 3 chars)", max_chars=3, key="sub_code").upper()
+                
+                teacher_list = st.session_state['data_teachers']['Teacher Name'].unique()
+                selected_teacher = c2.selectbox("Select Teacher", teacher_list, key="teach_acd")
+                load_jp = c1.number_input("Teaching Load (Periods/Week)", min_value=1, value=2)
+                
+                submit_acd = st.form_submit_button("Add Academic Subject")
+                
+                if submit_acd and subject_name and selected_teacher:
+                    t_row = st.session_state['data_teachers'][
+                        st.session_state['data_teachers']['Teacher Name'] == selected_teacher
+                    ].iloc[0]
+                    
+                    new_entry = pd.DataFrame([{
+                        'Type': 'Academic',
+                        'Class': selected_class,
+                        'Subject': subject_name,
+                        'Subject Code': subject_code if subject_code else subject_name[:3].upper(),
+                        'Teacher Name': selected_teacher,
+                        'Teacher Initials': t_row['Initials'],
+                        'Periods/Week': load_jp
+                    }])
+                    st.session_state['data_subjects'] = pd.concat(
+                        [st.session_state['data_subjects'], new_entry], ignore_index=True
+                    )
+                    st.success(f"Added: {subject_name} for {selected_class}")
+
+        # --- TAB 2: NON-ACADEMIC ---
+        with tab2:
+            st.warning("Use this for blocked times like Assembly, Chapel, or No Class.")
+            with st.form("form_non_academic"):
+                c1, c2 = st.columns(2)
+                activity_type = c1.selectbox("Activity Type", ["FLAG CEREMONY", "CHAPEL", "NO CLASS", "HOMEROOM", "Custom..."])
+                final_activity_name = activity_type
+                if activity_type == "Custom...":
+                    final_activity_name = c1.text_input("Enter Custom Activity Name")
+                
+                target_classes = c2.multiselect("Apply to Classes:", st.session_state['data_classes'], default=st.session_state['data_classes'])
+                duration_act = c1.number_input("Duration (Periods)", min_value=1, value=1)
+                
+                submit_non = st.form_submit_button("Add Activity")
+                
+                if submit_non and target_classes:
+                    batch_entries = []
+                    for k in target_classes:
+                        batch_entries.append({
+                            'Type': 'Non-Academic',
+                            'Class': k,
+                            'Subject': final_activity_name,
+                            'Subject Code': 'EVT',
+                            'Teacher Name': '-',
+                            'Teacher Initials': '-',
+                            'Periods/Week': duration_act
+                        })
+                    
+                    if batch_entries:
+                        st.session_state['data_subjects'] = pd.concat(
+                            [st.session_state['data_subjects'], pd.DataFrame(batch_entries)], ignore_index=True
+                        )
+                        st.success(f"Added {final_activity_name} to {len(target_classes)} classes.")
+
+# ==========================================
+# 5. DASHBOARD & ANALYTICS
+# ==========================================
+elif menu == "5. Dashboard & Analytics":
+    st.header("📊 Dashboard & Data Master")
+    st.subheader("1. Teaching Load Analytics")
+    
+    df_subs = st.session_state['data_subjects']
+    if not df_subs.empty:
+        df_academic = df_subs[df_subs['Type'] == 'Academic']
+        if not df_academic.empty:
+            load_analysis = df_academic.groupby('Teacher Name').agg({
+                'Periods/Week': 'sum',
+                'Class': 'count',
+                'Subject': lambda x: ', '.join(x.unique())
+            }).reset_index()
+            
+            load_analysis.rename(columns={'Periods/Week': 'Total Periods', 'Class': 'Class Count', 'Subject': 'Subjects'}, inplace=True)
+            load_analysis = load_analysis.sort_values(by='Total Periods', ascending=False)
+            st.dataframe(load_analysis.style.bar(subset=['Total Periods'], color='#4CAF50'), use_container_width=True)
+        else:
+            st.info("No academic subjects data found.")
+    else:
+        st.warning("Curriculum data is empty.")
+
+    st.write("---")
+    st.subheader("2. Master Data Overview")
+    st.dataframe(st.session_state['data_subjects'], use_container_width=True)
+
+# ==========================================
+# 6. GENERATE TIMETABLE (THE ALGORITHM)
+# ==========================================
+elif menu == "6. Generate Timetable":
+    st.header("⚡ Timetable Generator")
+    st.markdown("Automated Randomized Greedy Algorithm with Conflict Detection.")
+
+    if st.button("RUN GENERATOR"):
+        # Validation
+        if st.session_state['data_subjects'].empty:
+            st.error("Subject Database is empty!")
+            st.stop()
+        if st.session_state['time_structure'].empty:
+            st.error("Time Settings not configured!")
+            st.stop()
+
+        days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
+        periods = st.session_state['time_structure']['Period'].tolist() 
+        classes = st.session_state['data_classes']
+        
+        # 3D Schedule Matrix: schedule[Day][Period][Class]
+        schedule = {day: {p: {c: "" for c in classes} for p in periods} for day in days}
+        unassigned_subjects = []
+
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+
+        # --- PHASE 1: FIXED EVENTS ---
+        status_text.text("Plotting Fixed Events (Breaks, Ceremonies)...")
+        
+        # 1. Breaks
+        break_periods = st.session_state['time_structure'][st.session_state['time_structure']['Type'] == 'BREAK']['Period'].tolist()
+        for day in days:
+            for bp in break_periods:
+                for c in classes:
+                    schedule[day][bp][c] = "⛔ BREAK"
+
+        # 2. Non-Academic Events
+        df_events = st.session_state['data_subjects'][st.session_state['data_subjects']['Type'] == 'Non-Academic']
+        
+        for index, row in df_events.iterrows():
+            evt_name = row['Subject']
+            target_cls = row['Class']
+            duration = int(row['Periods/Week'])
+            
+            # HARDCODED LOGIC FOR EVENTS
+            if "FLAG" in evt_name.upper() or "UPACARA" in evt_name.upper():
+                # Force Monday Start
+                for i in range(duration):
+                    if i < len(periods): schedule['Monday'][periods[i]][target_cls] = f"🚩 {evt_name}"
+            
+            elif "CHAPEL" in evt_name.upper():
+                # Force Friday Start
+                for i in range(duration):
+                    if i < len(periods): schedule['Friday'][periods[i]][target_cls] = f"⛪ {evt_name}"
+            else:
+                # Others: Put at end of Friday
+                schedule['Friday'][periods[-1]][target_cls] = f"🛑 {evt_name}"
+
+        # --- PHASE 2: ACADEMIC PLOTTING ---
+        status_text.text("Calculating Academic Slots (Anti-Conflict Mode)...")
+        
+        df_academic = st.session_state['data_subjects'][st.session_state['data_subjects']['Type'] == 'Academic']
+        df_academic = df_academic.sample(frac=1).reset_index(drop=True) # Shuffle
+        
+        total_tasks = len(df_academic)
+        completed = 0
+
+        for index, row in df_academic.iterrows():
+            subject = row['Subject']
+            teacher_initial = row['Teacher Initials']
+            cls = row['Class']
+            load = int(row['Periods/Week'])
+            cell_content = f"{row['Subject Code']} ({teacher_initial})"
+            
+            count_assigned = 0
+            attempts = 0
+            
+            while count_assigned < load and attempts < 500:
+                rand_day = random.choice(days)
+                rand_period = random.choice(periods)
+                
+                # Check 1: Is Break?
+                if rand_period in break_periods:
+                    attempts += 1; continue
+                
+                # Check 2: Is Slot Empty?
+                if schedule[rand_day][rand_period][cls] != "":
+                    attempts += 1; continue 
+                
+                # Check 3: TEACHER CONFLICT
+                teacher_busy = False
+                for c_check in classes:
+                    current_slot_content = schedule[rand_day][rand_period][c_check]
+                    if f"({teacher_initial})" in current_slot_content:
+                        teacher_busy = True
+                        break
+                
+                if teacher_busy:
+                    attempts += 1; continue
+                
+                # Assign
+                schedule[rand_day][rand_period][cls] = cell_content
+                count_assigned += 1
+            
+            if count_assigned < load:
+                unassigned_subjects.append(f"{subject} - {cls} (Missing {load - count_assigned} slots)")
+
+            completed += 1
+            progress_bar.progress(completed / total_tasks)
+
+        status_text.text("Finalizing Timetable...")
+        st.success("Timetable Generated Successfully!")
+        
+        if unassigned_subjects:
+            st.error(f"⚠️ Failed to schedule {len(unassigned_subjects)} subjects due to full slots/conflicts.")
+            st.write(unassigned_subjects)
+        
+        # --- PHASE 3: DISPLAY ---
+        day_tabs = st.tabs(days)
+        
+        for i, day in enumerate(days):
+            with day_tabs[i]:
+                st.subheader(f"📅 {day} Schedule")
+                
+                data_display = []
+                for p in periods:
+                    row_data = {"Period": p}
+                    # Get Time Info
+                    t_info = st.session_state['time_structure'][st.session_state['time_structure']['Period'] == p].iloc[0]
+                    row_data["Time"] = f"{t_info['Start Time']} - {t_info['End Time']}"
+                    
+                    # Get Class Data
+                    for c in classes:
+                        row_data[c] = schedule[day][p][c]
+                    
+                    data_display.append(row_data)
+                
+                df_disp = pd.DataFrame(data_display)
+                st.dataframe(df_disp, use_container_width=True, hide_index=True)
